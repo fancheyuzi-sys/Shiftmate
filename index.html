@@ -8,7 +8,7 @@
 </style></head><body><div class="app" id="app"><header><div class="brand"><div class="logo">S</div><div><h1>ShiftMate <span style="font-size:12px;color:#63848b">澳洲工资日历</span></h1><small>你的工时 · 你的工资 · 你的设备</small></div></div><div class="privacy">🔒 本地保存</div></header><nav class="tabs" id="tabs"></nav><main id="main"></main><footer class="footer">V1.0 交互原型 · 非正式工资单或税务申报工具 · 数据不上传</footer></div><div id="modalRoot"></div><div id="toastRoot"></div>
 <script>
 'use strict';
-const APP_VERSION='1.0.0-prototype';
+const APP_VERSION='1.2.0-beta';
 const DAYS=['周一','周二','周三','周四','周五','周六','周日'];
 const SHORTDAYS=['一','二','三','四','五','六','日'];
 const $=sel=>document.querySelector(sel);
@@ -48,26 +48,55 @@ function getJob(id){return state.jobs.find(j=>j.id===id)||state.jobs[0]||default
 function rate(rule,base){rule=rule||{mode:'multiplier',value:1.5,add:0};if(rule.mode==='fixed')return Number(rule.value)||0;if(rule.mode==='combo')return base*(Number(rule.value)||0)+(Number(rule.add)||0);return base*(Number(rule.value)||0)}
 function dateParts(startDate,st,ed){const d0=makeDate(startDate),start=Number(st.split(':')[0])*60+Number(st.split(':')[1]),e=Number(ed.split(':')[0])*60+Number(ed.split(':')[1]);return {start,end:e<=start?e+1440:e};}
 function phHours(date,st,ed){const p=dateParts(date,st,ed);let mins=0;for(let shift=0;shift<=1;shift++){const d=addDays(date,shift);const h=holiday(d);if(!h)continue;const a=shift*1440+h.from*60,b=shift*1440+h.to*60;mins+=Math.max(0,Math.min(p.end,b)-Math.max(p.start,a));}return mins/60;}
-function recordCalc(r){const totalRaw=Math.max(0,hoursBetween(r.start,r.end)-(Number(r.unpaidBreak)||0)/60);const total=fix(totalRaw);const rawPH=r.type!=='work'?0:(r.phOverride===''||r.phOverride==null?phHours(r.date,r.start,r.end):Number(r.phOverride)||0);const proportion=hoursBetween(r.start,r.end)>0?total/hoursBetween(r.start,r.end):0;const holidayH=Math.min(total,Math.max(0,rawPH*proportion));let overtime=r.type==='work'?Math.min(Number(r.otHours)||0,Math.max(0,total-holidayH)):0;const regular=fix(Math.max(0,total-holidayH-overtime));const ph=fix(holidayH);const base=Number(r.hourly)||0;
-const job=getJob(r.jobId);const sat=dow(makeDate(r.date))===5,sun=dow(makeDate(r.date))===6;
+function extraOvertimeInfo(r){
+ const items=Array.isArray(r.extraOvertime)?r.extraOvertime:[];
+ let total=0,ot=0,ph=0,otW=0,phW=0;const base=Number(r.hourly)||0;
+ // Historical records may have overtime carved out of the original shift. Keep that calculation unchanged.
+ let consumedOrdinaryOT=Math.min(Math.max(0,Number(r.otHours)||0),Math.max(0,hoursBetween(r.start,r.end)-(Number(r.unpaidBreak)||0)/60));
+ for(const item of items){
+  if(!item.start||!item.end)continue;
+  const duration=hoursBetween(item.start,item.end),breakH=Math.max(0,Number(item.unpaidBreak)||0)/60;
+  if(breakH>=duration)continue;
+  const paid=duration-breakH;
+  const baseStart=Number(r.start.slice(0,2))*60+Number(r.start.slice(3));
+  const otStart=Number(item.start.slice(0,2))*60+Number(item.start.slice(3));
+  const otDate=addDays(r.date,otStart<baseStart?1:0);
+  let holidayHours=0;
+  if(item.kind==='holiday')holidayHours=paid;
+  else if(item.kind==='auto')holidayHours=Math.min(paid,phHours(otDate,item.start,item.end)*(paid/duration));
+  holidayHours=fix(Math.max(0,holidayHours));
+  const ordinaryHours=fix(Math.max(0,paid-holidayHours));
+  // Calculate stepped overtime using all ordinary overtime hours already consumed.
+  let first= Math.min(ordinaryHours,Math.max(0,(Number(r.otFirstHours)||0)-consumedOrdinaryOT));
+  let later=ordinaryHours-first;
+  otW+=first*rate(r.ot1,base)+later*rate(r.ot2,base);
+  consumedOrdinaryOT+=ordinaryHours;
+  phW+=holidayHours*rate(item.phVariant==='B'?r.phB:r.phA,base);
+  ot+=ordinaryHours;ph+=holidayHours;total+=paid;
+ }
+ return {total:fix(total),ot:fix(ot),ph:fix(ph),otW:fix(otW),phW:fix(phW)};
+}
+function recordCalc(r){const totalRaw=Math.max(0,hoursBetween(r.start,r.end)-(Number(r.unpaidBreak)||0)/60);const mainTotal=fix(totalRaw);const rawPH=r.type!=='work'?0:(r.phOverride===''||r.phOverride==null?phHours(r.date,r.start,r.end):Number(r.phOverride)||0);const proportion=hoursBetween(r.start,r.end)>0?mainTotal/hoursBetween(r.start,r.end):0;const holidayH=Math.min(mainTotal,Math.max(0,rawPH*proportion));let overtime=r.type==='work'?Math.min(Number(r.otHours)||0,Math.max(0,mainTotal-holidayH)):0;const regular=fix(Math.max(0,mainTotal-holidayH-overtime));const ph=fix(holidayH);const base=Number(r.hourly)||0;
+const sat=dow(makeDate(r.date))===5,sun=dow(makeDate(r.date))===6;
 const weekendPct=r.type!=='work'?0:(sat?Number(r.weekendSat||0):(sun?Number(r.weekendSun||0):0));
 const nightPct=r.type!=='work'?0:Number(r.nightPercent)||0;
 const normalW=regular*base;
 let first=Math.min(overtime,Number(r.otFirstHours)||0);let later=overtime-first;
-const otW=first*rate(r.ot1,base)+later*rate(r.ot2,base);
-const phW=ph*rate(r.phVariant==='B'?r.phB:r.phA,base);
-// Prototype convention: weekend and night loading apply only to ordinary hours to avoid automatic stacking on PH/OT.
+const baseOtW=first*rate(r.ot1,base)+later*rate(r.ot2,base);
+const basePhW=ph*rate(r.phVariant==='B'?r.phB:r.phA,base);
+const extra=r.type==='work'?extraOvertimeInfo(r):{total:0,ot:0,ph:0,otW:0,phW:0};
+// Weekend/night premiums are only applied to regular hours, not overtime or holidays.
 const addons=regular*base*(weekendPct+nightPct)/100 + (Number(r.otherAllowance)||0);
-const gross=fix(normalW+otW+phW+addons);
-const superBase=normalW+addons+(r.type==='annual'||r.type==='sick'||r.type==='public-leave'?phW:0);
+const gross=fix(normalW+baseOtW+basePhW+extra.otW+extra.phW+addons);
+const superBase=normalW+addons+(r.type==='annual'||r.type==='sick'||r.type==='public-leave'?basePhW:0);
 const superAmount=fix(Math.max(0,superBase)*(Number(r.superPct)||0)/100);
-return {total,regular,ot:fix(overtime),ph,normalW:fix(normalW),otW:fix(otW),phW:fix(phW),addons:fix(addons),gross,superAmount};}
+return {total:fix(mainTotal+extra.total),regular,ot:fix(overtime+extra.ot),ph:fix(ph+extra.ph),normalW:fix(normalW),otW:fix(baseOtW+extra.otW),phW:fix(basePhW+extra.phW),addons:fix(addons),gross,superAmount};}
 function fiscalYear(date){const yr=Number(date.slice(0,4)),mo=Number(date.slice(5,7));return mo>=7?`${yr}-${String(yr+1).slice(-2)}`:`${yr-1}-${String(yr).slice(-2)}`}
 function whmTax(x){x=Math.max(0,x);return Math.min(x,45000)*.15+Math.max(0,Math.min(x-45000,90000))*.30+Math.max(0,Math.min(x-135000,55000))*.37+Math.max(0,x-190000)*.45}
 function allRows(){return [...state.records].sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));}
 function taxAllocation(){const m={};const cum={};for(const r of allRows()){const fy=fiscalYear(r.date);if(cum[fy]==null)cum[fy]=(state.settings.priorFY===fy?Number(state.settings.priorIncome)||0:0);const gross=recordCalc(r).gross,tax=state.settings.taxMode==='fixed'?gross*(Number(state.settings.fixedTax)||0)/100:whmTax(cum[fy]+gross)-whmTax(cum[fy]);m[r.id]=fix(tax);cum[fy]+=gross;}return m}
 function agg(rs,taxMap=taxAllocation()){const a={total:0,regular:0,ot:0,ph:0,normalW:0,otW:0,phW:0,addons:0,gross:0,tax:0,net:0,superAmount:0,entries:rs.length};for(const r of rs){const v=recordCalc(r);for(const k of ['total','regular','ot','ph','normalW','otW','phW','addons','gross','superAmount'])a[k]+=v[k];a.tax+=taxMap[r.id]||0}for(const k of Object.keys(a))a[k]=fix(a[k]);a.net=fix(a.gross-a.tax);return a}
-function newRecord(date,job){job=job||state.jobs[0]||defaultJob();return {id:uid(),date,jobId:job.id,jobName:job.name,type:'work',start:job.start,end:job.end,unpaidBreak:Number(job.unpaidBreak)||0,paidBreak:Number(job.paidBreak)||0,hourly:Number(job.hourly)||0,nightPercent:Number(job.nightPercent)||0,weekendSat:Number(job.weekendSat)||0,weekendSun:Number(job.weekendSun)||0,ot1:structuredClone(job.ot1),ot2:structuredClone(job.ot2),otFirstHours:job.otFirstHours,phA:structuredClone(job.phA),phB:structuredClone(job.phB),phVariant:'A',otHours:0,phOverride:'',otherAllowance:0,superPct:Number(job.superPct)||0,actual:true,note:''}}
+function newRecord(date,job){job=job||state.jobs[0]||defaultJob();return {id:uid(),date,jobId:job.id,jobName:job.name,type:'work',start:job.start,end:job.end,unpaidBreak:Number(job.unpaidBreak)||0,paidBreak:Number(job.paidBreak)||0,hourly:Number(job.hourly)||0,nightPercent:Number(job.nightPercent)||0,weekendSat:Number(job.weekendSat)||0,weekendSun:Number(job.weekendSun)||0,ot1:structuredClone(job.ot1),ot2:structuredClone(job.ot2),otFirstHours:job.otFirstHours,phA:structuredClone(job.phA),phB:structuredClone(job.phB),phVariant:'A',otHours:0,extraOvertime:[],phOverride:'',otherAllowance:0,superPct:Number(job.superPct)||0,actual:true,note:''}}
 function cloneRecord(r,newDate){return {...structuredClone(r),id:uid(),date:newDate}}
 const tabs=[['calendar','▦ 日历'],['jobs','▤ 工作预设'],['payslips','▣ 工资单'],['settings','⚙ 设置与备份']];
 function render(){document.querySelector('#tabs').innerHTML=tabs.map(([id,name])=>`<button class="tab ${tab===id?'active':''}" data-tab="${id}">${name}</button>`).join('');document.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{tab=el.dataset.tab;render()});const main=$('#main');main.innerHTML=tab==='calendar'?calendarHTML():tab==='jobs'?jobsHTML():tab==='payslips'?payslipsHTML():settingsHTML();wireTab()}
@@ -89,14 +118,41 @@ body+=`<div class="surface" style="padding:12px"><div class="metric"><span>总�
 openModal(body);document.querySelectorAll('[data-rec]').forEach(b=>b.onclick=()=>editRecord(date,b.dataset.rec));$('#addShift').onclick=()=>editRecord(date);$('#dayDone').onclick=closeModal}
 function field(label,name,val,type='text',extra=''){return `<div class="field"><label for="${name}">${label}</label><input id="${name}" name="${name}" type="${type}" value="${safe(val)}" ${extra}></div>`}
 function selectField(label,name,items,current){return `<div class="field"><label for="${name}">${label}</label><select name="${name}" id="${name}">${items.map(([v,n])=>`<option value="${safe(v)}" ${current==v?'selected':''}>${safe(n)}</option>`).join('')}</select></div>`}
+
+function extraOvertimeSection(r){
+ const items=Array.isArray(r.extraOvertime)?r.extraOvertime:[];
+ const row=(x,i)=>`<div class="surface overtime-entry" data-extra-row="${i}" style="padding:12px;background:#f5fbfa;border-color:#cfe7e1"><div class="row"><strong>额外加班 #${i+1}</strong><button type="button" class="btn tiny warn" data-extra-remove="${i}">删除</button></div><div class="grid2">${field('加班开始时间','extraStart'+i,x.start||r.end,'time')}${field('加班结束时间（可跨午夜）','extraEnd'+i,x.end||'00:00','time')}${field('加班无薪休息（分钟）','extraBreak'+i,x.unpaidBreak||0,'number','min="0"')}${selectField('加班类别','extraKind'+i,[['ordinary','普通加班'],['holiday','节假日加班'],['auto','自动按日期判断普通/节假日']],x.kind||'auto')}${selectField('节假日加班方案','extraVariant'+i,[['A','节假日方案 A'],['B','节假日方案 B']],x.phVariant||'A')}</div></div>`;
+ return `<div class="surface" style="background:#f6fbf9;border-color:#c7e1db;margin-top:14px"><h3>＋ 额外加班（不从正常工时扣除）</h3><p class="subtle">先填写上方正常班次，再点击「添加额外加班」。例如正常班次 14:00–22:00，额外加班 22:00–00:00：系统分别累加工时。普通加班按预设的前段 / 后段倍率；节假日加班按 A / B 方案。旧版的「主班次内划为加班」仅用于兼容已有记录，新记录请留 0。</p><div id="extraRows">${items.map(row).join('')}</div><button type="button" class="btn primary" id="addExtraOvertime">＋ 添加额外加班</button></div>`;
+}
+function getExtraOvertime(form){
+ return [...form.querySelectorAll('[data-extra-row]')].map((el)=>{let i=el.dataset.extraRow;return {start:form.elements['extraStart'+i].value,end:form.elements['extraEnd'+i].value,unpaidBreak:Number(form.elements['extraBreak'+i].value)||0,kind:form.elements['extraKind'+i].value,phVariant:form.elements['extraVariant'+i].value}});
+}
+function attachExtraOvertime(form,r){
+ let items=structuredClone(Array.isArray(r.extraOvertime)?r.extraOvertime:[]);
+ const box=form.querySelector('#extraRows');
+ function redraw(){box.innerHTML=items.map((x,i)=>`<div class="surface overtime-entry" data-extra-row="${i}" style="padding:12px;background:#f5fbfa;border-color:#cfe7e1"><div class="row"><strong>额外加班 #${i+1}</strong><button type="button" class="btn tiny warn" data-extra-remove="${i}">删除</button></div><div class="grid2">${field('加班开始时间','extraStart'+i,x.start,'time')}${field('加班结束时间（可跨午夜）','extraEnd'+i,x.end,'time')}${field('加班无薪休息（分钟）','extraBreak'+i,x.unpaidBreak,'number','min="0"')}${selectField('加班类别','extraKind'+i,[['ordinary','普通加班'],['holiday','节假日加班'],['auto','自动按日期判断普通/节假日']],x.kind)}${selectField('节假日加班方案','extraVariant'+i,[['A','节假日方案 A'],['B','节假日方案 B']],x.phVariant)}</div></div>`).join('');
+ box.querySelectorAll('[data-extra-remove]').forEach(btn=>btn.onclick=()=>{collect();items.splice(Number(btn.dataset.extraRemove),1);redraw()});
+ }
+ function collect(){items=getExtraOvertime(form)}
+ form.querySelector('#addExtraOvertime').onclick=()=>{collect();let last=items.length?items[items.length-1].end:form.elements.end.value;let endM=(Number(last.slice(0,2))*60+Number(last.slice(3))+120)%1440;items.push({start:last,end:String(Math.floor(endM/60)).padStart(2,'0')+':'+String(endM%60).padStart(2,'0'),unpaidBreak:0,kind:'auto',phVariant:'A'});redraw()};
+}
+function validateExtraOvertime(n){
+ if(n.type!=='work')return true;
+ for(const [i,x] of (n.extraOvertime||[]).entries()){
+  if(!x.start||!x.end||x.start===x.end||x.unpaidBreak<0||x.unpaidBreak>=hoursBetween(x.start,x.end)*60){toast(`额外加班 #${i+1} 的时间或休息不正确`);return false}
+  if(i===0&&x.start!==n.end){toast('额外加班应从正常班次结束时开始，如有间隔请新增独立工作记录');return false}
+  if(i>0&&x.start!==n.extraOvertime[i-1].end){toast('多个额外加班时间段应前后衔接');return false}
+ }
+ return true;
+}
 function editRecord(date,id){const existing=state.records.find(r=>r.id===id),r=existing?structuredClone(existing):newRecord(date),job=getJob(r.jobId),ruleForm=(p,title,rule)=>`<div class="field"><label>${title}</label><div class="grid3">${selectField('规则',p+'Mode',[['multiplier','倍率 ×'],['fixed','固定时薪'],['combo','倍率＋固定额']],rule.mode)}${field('数值',p+'Value',rule.value,'number','step="0.01" min="0"')}${field('每小时附加额 ($)',p+'Add',rule.add||0,'number','step="0.01"')}</div></div>`;
-let html=`<div class="modal-header"><h2>${existing?'编辑':'添加'}工作 · ${date}</h2><button class="close">×</button></div><form id="recordForm"><div class="grid2">${selectField('工作预设','jobId',state.jobs.map(j=>[j.id,j.name]),r.jobId)}${selectField('记录类型','type',[['work','工作'],['annual','年假（按模板计酬）'],['sick','病假（按模板计酬）'],['public-leave','带薪公共假日（按模板计酬）']],r.type)}${field('开始时间','start',r.start,'time')}${field('结束时间（可跨午夜）','end',r.end,'time')}${field('无薪休息（分钟）','unpaidBreak',r.unpaidBreak,'number','min="0"')}${field('带薪休息（分钟，仅备忘）','paidBreak',r.paidBreak,'number','min="0"')}${field('普通时薪 ($)','hourly',r.hourly,'number','step="0.01" min="0"')}${field('普通加班总时数 (h)','otHours',r.otHours,'number','step="0.25" min="0"')}${field('周六普通工时津贴 (%)','weekendSat',r.weekendSat,'number','step="0.01"')}${field('周日普通工时津贴 (%)','weekendSun',r.weekendSun,'number','step="0.01"')}${field('夜班普通工时津贴 (%)','nightPercent',r.nightPercent,'number','step="0.01"')}${field('其他固定津贴 ($)','otherAllowance',r.otherAllowance,'number','step="0.01"')}${field('节假日时数覆盖 (h，留空自动识别)','phOverride',r.phOverride,'number','step="0.25" min="0"')}${selectField('节假日计算方案','phVariant',[['A','节假日方案 A'],['B','节假日方案 B']],r.phVariant)}${field('Super 比例 (%)','superPct',r.superPct,'number','step="0.1"')}${field('普通加班第一阶段时长 (h)','otFirstHours',r.otFirstHours,'number','step="0.25"')}</div><details><summary class="btn" style="display:inline-block;margin:12px 0">高级工资规则 ▾</summary>${ruleForm('ot1','普通加班前段',r.ot1)}${ruleForm('ot2','普通加班后段',r.ot2)}${ruleForm('phA','节假日方案 A',r.phA)}${ruleForm('phB','节假日方案 B',r.phB)}</details><div class="field"><label>备注</label><textarea name="note" rows="2">${safe(r.note||'')}</textarea></div><div class="note caution">原型计算约定：加班与节假日时数不重叠；周末、夜班津贴默认仅叠加在普通工时上。请按真实协议核实，不应直接据此判断欠薪。</div><div class="form-actions">${existing?'<button type="button" class="btn warn" id="deleteRec">删除此条</button>':''}<button type="button" class="btn" id="cancelRec">取消</button><button class="btn primary" type="submit">保存记录</button></div></form>`;
-openModal(html,true);const form=$('#recordForm');$('#cancelRec').onclick=()=>openDay(date);if(existing)$('#deleteRec').onclick=()=>{if(!confirm('确定删除这条工作记录？'))return;state.records=state.records.filter(x=>x.id!==existing.id);saveAndRender();openDay(date)};
+let html=`<div class="modal-header"><h2>${existing?'编辑':'添加'}工作 · ${date}</h2><button class="close">×</button></div><form id="recordForm"><div class="grid2">${selectField('工作预设','jobId',state.jobs.map(j=>[j.id,j.name]),r.jobId)}${selectField('记录类型','type',[['work','工作'],['annual','年假（按模板计酬）'],['sick','病假（按模板计酬）'],['public-leave','带薪公共假日（按模板计酬）']],r.type)}${field('开始时间','start',r.start,'time')}${field('结束时间（可跨午夜）','end',r.end,'time')}${field('无薪休息（分钟）','unpaidBreak',r.unpaidBreak,'number','min="0"')}${field('带薪休息（分钟，仅备忘）','paidBreak',r.paidBreak,'number','min="0"')}${field('普通时薪 ($)','hourly',r.hourly,'number','step="0.01" min="0"')}${field('旧版：主班次内划为加班的小时 (h)','otHours',r.otHours,'number','step="0.25" min="0"')}${field('周六普通工时津贴 (%)','weekendSat',r.weekendSat,'number','step="0.01"')}${field('周日普通工时津贴 (%)','weekendSun',r.weekendSun,'number','step="0.01"')}${field('夜班普通工时津贴 (%)','nightPercent',r.nightPercent,'number','step="0.01"')}${field('其他固定津贴 ($)','otherAllowance',r.otherAllowance,'number','step="0.01"')}${field('节假日时数覆盖 (h，留空自动识别)','phOverride',r.phOverride,'number','step="0.25" min="0"')}${selectField('节假日计算方案','phVariant',[['A','节假日方案 A'],['B','节假日方案 B']],r.phVariant)}${field('Super 比例 (%)','superPct',r.superPct,'number','step="0.1"')}${field('普通加班第一阶段时长 (h)','otFirstHours',r.otFirstHours,'number','step="0.25"')}</div>${extraOvertimeSection(r)}<details><summary class="btn" style="display:inline-block;margin:12px 0">高级工资规则 ▾</summary>${ruleForm('ot1','普通加班前段',r.ot1)}${ruleForm('ot2','普通加班后段',r.ot2)}${ruleForm('phA','节假日方案 A',r.phA)}${ruleForm('phB','节假日方案 B',r.phB)}</details><div class="field"><label>备注</label><textarea name="note" rows="2">${safe(r.note||'')}</textarea></div><div class="note caution">计算约定：额外加班累加到正常班次之外；节假日加班采用所选 A/B 方案，不再叠加普通加班倍率；周末、夜班津贴默认仅叠加普通工时。请按真实协议核实，不应直接据此判断欠薪。</div><div class="form-actions">${existing?'<button type="button" class="btn warn" id="deleteRec">删除此条</button>':''}<button type="button" class="btn" id="cancelRec">取消</button><button class="btn primary" type="submit">保存记录</button></div></form>`;
+openModal(html,true);const form=$('#recordForm');attachExtraOvertime(form,r);$('#cancelRec').onclick=()=>openDay(date);if(existing)$('#deleteRec').onclick=()=>{if(!confirm('确定删除这条工作记录？'))return;state.records=state.records.filter(x=>x.id!==existing.id);saveAndRender();openDay(date)};
 form.jobId.onchange=()=>{if(existing)return;const j=getJob(form.jobId.value),r2=newRecord(date,j);editRecordWithTemplate(date,r2)};
-form.onsubmit=e=>{e.preventDefault();const f=new FormData(form),n={...r};for(const key of ['start','end','jobId','type','phVariant','note'])n[key]=f.get(key);const j=getJob(n.jobId);n.jobName=j.name;for(const k of ['unpaidBreak','paidBreak','hourly','otHours','weekendSat','weekendSun','nightPercent','otherAllowance','superPct','otFirstHours'])n[k]=Number(f.get(k))||0;n.phOverride=f.get('phOverride')===''?'':Number(f.get('phOverride'))||0;for(const k of ['ot1','ot2','phA','phB'])n[k]={mode:f.get(k+'Mode'),value:Number(f.get(k+'Value'))||0,add:Number(f.get(k+'Add'))||0};if(hoursBetween(n.start,n.end)>24||!n.start||!n.end){toast('请检查时间');return}n.actual=true;if(existing)state.records=state.records.map(x=>x.id===n.id?n:x);else state.records.push(n);saveAndRender();openDay(date);toast('记录已保存在本机')};}
+form.onsubmit=e=>{e.preventDefault();const f=new FormData(form),n={...r};for(const key of ['start','end','jobId','type','phVariant','note'])n[key]=f.get(key);const j=getJob(n.jobId);n.jobName=j.name;for(const k of ['unpaidBreak','paidBreak','hourly','otHours','weekendSat','weekendSun','nightPercent','otherAllowance','superPct','otFirstHours'])n[k]=Number(f.get(k))||0;n.phOverride=f.get('phOverride')===''?'':Number(f.get('phOverride'))||0;n.extraOvertime=getExtraOvertime(form);if(!validateExtraOvertime(n))return;for(const k of ['ot1','ot2','phA','phB'])n[k]={mode:f.get(k+'Mode'),value:Number(f.get(k+'Value'))||0,add:Number(f.get(k+'Add'))||0};if(hoursBetween(n.start,n.end)>24||!n.start||!n.end){toast('请检查时间');return}n.actual=true;if(existing)state.records=state.records.map(x=>x.id===n.id?n:x);else state.records.push(n);saveAndRender();openDay(date);toast('记录已保存在本机')};}
 function editRecordWithTemplate(date,record){ // Preset change: display freshly populated edit fields without writing yet.
 const temp=state.records.find(x=>x.id===record.id);if(temp)return;state.records.push(record);editRecord(date,record.id);state.records=state.records.filter(x=>x.id!==record.id); // edit form submit uses existing=true but will insert? handled below by replacement on save
-const form=$('#recordForm');if(form){form.onsubmit=(e=>{e.preventDefault();const f=new FormData(form),n={...record};for(const key of ['start','end','jobId','type','phVariant','note'])n[key]=f.get(key);n.jobName=getJob(n.jobId).name;for(const k of ['unpaidBreak','paidBreak','hourly','otHours','weekendSat','weekendSun','nightPercent','otherAllowance','superPct','otFirstHours'])n[k]=Number(f.get(k))||0;n.phOverride=f.get('phOverride')===''?'':Number(f.get('phOverride'))||0;for(const k of ['ot1','ot2','phA','phB'])n[k]={mode:f.get(k+'Mode'),value:Number(f.get(k+'Value'))||0,add:Number(f.get(k+'Add'))||0};state.records.push(n);saveAndRender();openDay(date);toast('已添加记录')});const del=$('#deleteRec');if(del)del.remove();}}
+const form=$('#recordForm');if(form){form.onsubmit=(e=>{e.preventDefault();const f=new FormData(form),n={...record};for(const key of ['start','end','jobId','type','phVariant','note'])n[key]=f.get(key);n.jobName=getJob(n.jobId).name;for(const k of ['unpaidBreak','paidBreak','hourly','otHours','weekendSat','weekendSun','nightPercent','otherAllowance','superPct','otFirstHours'])n[k]=Number(f.get(k))||0;n.phOverride=f.get('phOverride')===''?'':Number(f.get('phOverride'))||0;n.extraOvertime=getExtraOvertime(form);if(!validateExtraOvertime(n))return;for(const k of ['ot1','ot2','phA','phB'])n[k]={mode:f.get(k+'Mode'),value:Number(f.get(k+'Value'))||0,add:Number(f.get(k+'Add'))||0};state.records.push(n);saveAndRender();openDay(date);toast('已添加记录')});const del=$('#deleteRec');if(del)del.remove();}}
 function openWeek(start){const days=Array.from({length:7},(_,i)=>addDays(start,i)),rs=state.records.filter(r=>r.date>=start&&r.date<=days[6]),a=agg(rs),tax=taxAllocation();let html=`<div class="modal-header"><div><h2>周结算 · ${start} 至 ${days[6]}</h2><div class="subtle">每周固定周一至周日，跨月仍按完整七天统计</div></div><button class="close">×</button></div><div class="weekview-top"><div class="stat"><div class="k">总工时</div><div class="v">${fmtHours(a.total)}</div></div><div class="stat"><div class="k">税前工资</div><div class="v">${money(a.gross)}</div></div><div class="stat"><div class="k">预计税后</div><div class="v">${money(a.net)}</div></div></div><h3>工时与薪资构成</h3>`;
 for(const [name,hrs,wage] of [['普通工时',a.regular,a.normalW],['普通加班',a.ot,a.otW],['公共假日工时',a.ph,a.phW]])html+=`<div class="summary-line"><span>${name} · ${fmtHours(hrs)}</span><strong>${money(wage)}</strong></div>`;
 html+=`<div class="summary-line"><span>津贴</span><strong>${money(a.addons)}</strong></div><div class="summary-line"><span>预计扣税（非 PAYG 预扣税表）</span><strong>−${money(a.tax)}</strong></div><div class="summary-line"><span>Super 估算（单独计，不并入到手工资）</span><strong>${money(a.superAmount)}</strong></div><h3>每日明细</h3>`;

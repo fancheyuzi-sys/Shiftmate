@@ -1,5 +1,5 @@
 // ShiftMate service worker. Cache the public app shell, never salary data.
-const CACHE = 'shiftmate-shell-v1.1';
+const CACHE = 'shiftmate-shell-v1.2';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
